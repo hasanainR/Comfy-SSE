@@ -1,0 +1,7 @@
+opencv-python>=4.8
+numpy
+# EXR read/write fallback when the OpenCV build lacks OpenEXR support:
+OpenEXR>=3.2
+# Bundled ffmpeg binary (same approach as VideoHelperSuite) — used for video
+# encode + node previews. A system ffmpeg on PATH takes precedence if present.
+imageio-ffmpeg>=0.4.9

@@ -1,0 +1,14 @@
+[project]
+name = "comfy-sse"
+description = "Pipeline IO nodes for ComfyUI: sequence/video loading, ACES colour handling, and path-aware writing with UI previews."
+version = "1.0.0"
+license = { file = "LICENSE" }
+dependencies = ["opencv-python>=4.8", "numpy", "OpenEXR>=3.2", "imageio-ffmpeg>=0.4.9"]
+
+[project.urls]
+Repository = "https://github.com/sinkingship/Comfy-SSE"
+
+[tool.comfy]
+PublisherId = "sinkingship"
+DisplayName = "Comfy-SSE"
+Icon = ""
