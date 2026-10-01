@@ -62,7 +62,7 @@ class SSE_WriteClip:
                 "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 240.0}),
                 "start_number": ("INT", {"default": 1001, "min": 0, "max": 2 ** 31, "tooltip": "First frame number for sequences"}),
                 "version_up": ("BOOLEAN", {"default": True, "tooltip": "Never overwrite: version up if files exist"}),
-                "save_preview": ("BOOLEAN", {"default": True, "tooltip": "Also write an H.264 preview into the ComfyUI output folder so the result shows in the UI"}),
+                "save_preview": ("BOOLEAN", {"default": True, "tooltip": "Keep the H.264 preview in the ComfyUI output folder (off = temp folder, cleared on restart)"}),
             },
         }
 
@@ -98,29 +98,30 @@ class SSE_WriteClip:
                 written.append(out_file)
 
         ui = {}
-        if save_preview:
-            try:
-                ui = self._write_preview(frames, input_colorspace, fps, os.path.basename(prefix))
-            except Exception as err:  # preview must never fail the render
-                print(f"[Comfy-SSE] preview failed: {err}")
+        try:
+            ui = self._write_preview(frames, input_colorspace, fps, os.path.basename(prefix), save_preview)
+        except Exception as err:  # preview must never fail the render
+            print(f"[Comfy-SSE] preview failed: {err}")
         summary = written[0] if len(written) == 1 else f"{written[0]}  (+{len(written) - 1} more)"
         return {"ui": ui, "result": (summary,)}
 
-    def _write_preview(self, frames, input_colorspace, fps, base_name):
+    def _write_preview(self, frames, input_colorspace, fps, base_name, keep):
         import folder_paths
-        out_dir = folder_paths.get_output_directory()
+        kind = "output" if keep else "temp"
+        out_dir = folder_paths.get_output_directory() if keep else folder_paths.get_temp_directory()
+        os.makedirs(out_dir, exist_ok=True)
         safe = re.sub(r"[^a-zA-Z0-9_-]+", "_", base_name) or "sse"
         display = [convert(f, input_colorspace, "Rec709_Display") for f in frames]
 
         if len(display) == 1:
             name = self._unique_name(out_dir, safe, ".png")
             write_png(os.path.join(out_dir, name), display[0])
-            return {"images": [{"filename": name, "subfolder": "", "type": "output"}]}
+            return {"images": [{"filename": name, "subfolder": "", "type": kind}]}
 
         name = self._unique_name(out_dir, safe, ".mp4")
         write_h264(os.path.join(out_dir, name), display, fps, find_ffmpeg(), crf=23, max_width=1280)
         return {"gifs": [{
-            "filename": name, "subfolder": "", "type": "output",
+            "filename": name, "subfolder": "", "type": kind,
             "format": "video/h264-mp4", "frame_rate": float(fps),
         }]}
 

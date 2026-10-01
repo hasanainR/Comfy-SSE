@@ -3,6 +3,7 @@
 # Node modules live in nodes/ and are discovered automatically: any module
 # there that defines NODE_CLASS_MAPPINGS / NODE_DISPLAY_NAME_MAPPINGS is
 # registered. Shared code (colour, IO, path resolution) lives in core/.
+# routes.py serves the live clip previews drawn by web/sse_preview.js.
 #
 # Contract is frozen: input names, enum strings and 0-based frame conventions
 # are depended on by Nautilus. Add new inputs — never rename existing ones.
@@ -15,8 +16,10 @@ os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
 
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
+WEB_DIRECTORY = "./web"
 
 from . import nodes as _nodes_pkg  # noqa: E402
+from . import routes  # noqa: E402,F401
 
 for _mod_info in pkgutil.iter_modules(_nodes_pkg.__path__):
     try:
@@ -27,4 +30,4 @@ for _mod_info in pkgutil.iter_modules(_nodes_pkg.__path__):
         print(f"[Comfy-SSE] failed to load nodes.{_mod_info.name}:")
         traceback.print_exc()
 
-__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
+__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
