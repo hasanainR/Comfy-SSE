@@ -1,5 +1,8 @@
 # Comfy-SSE writer. Writes finals to any absolute path AND reports a preview
 # into ComfyUI history so frontends (Nautilus, the Comfy UI) can show results.
+# With save_metadata on, the workflow that produced the render is written as a
+# {prefix}.workflow.json sidecar next to the output.
+import json
 import os
 import re
 
@@ -64,9 +67,17 @@ class SSE_WriteClip:
                 "version_up": ("BOOLEAN", {"default": True, "tooltip": "Never overwrite: version up if files exist"}),
                 "save_preview": ("BOOLEAN", {"default": True, "tooltip": "Keep the H.264 preview in the ComfyUI output folder (off = temp folder, cleared on restart)"}),
             },
+            "optional": {
+                "save_metadata": ("BOOLEAN", {"default": True, "tooltip": "Write the workflow that made this render as {prefix}.workflow.json next to the output"}),
+            },
+            "hidden": {
+                "prompt": "PROMPT",
+                "extra_pnginfo": "EXTRA_PNGINFO",
+            },
         }
 
-    def write(self, images, output_path, file_format, input_colorspace, fps, start_number, version_up, save_preview):
+    def write(self, images, output_path, file_format, input_colorspace, fps, start_number, version_up, save_preview,
+              save_metadata=True, prompt=None, extra_pnginfo=None):
         prefix = str(output_path or "").strip().strip('"')
         if not prefix:
             raise ValueError("output_path is empty")
@@ -97,6 +108,12 @@ class SSE_WriteClip:
                     write_png(out_file, f)
                 written.append(out_file)
 
+        if save_metadata:
+            try:
+                self._write_workflow(prefix, prompt, extra_pnginfo)
+            except Exception as err:  # metadata must never fail the render
+                print(f"[Comfy-SSE] workflow sidecar failed: {err}")
+
         ui = {}
         try:
             ui = self._write_preview(frames, input_colorspace, fps, os.path.basename(prefix), save_preview)
@@ -104,6 +121,26 @@ class SSE_WriteClip:
             print(f"[Comfy-SSE] preview failed: {err}")
         summary = written[0] if len(written) == 1 else f"{written[0]}  (+{len(written) - 1} more)"
         return {"ui": ui, "result": (summary,)}
+
+    @staticmethod
+    def _write_workflow(prefix, prompt, extra_pnginfo):
+        """{prefix}.workflow.json — the UI workflow when queued from ComfyUI
+        (drag it back onto the canvas to reopen it, with the exact API prompt
+        tucked into its "extra"), else the API prompt itself (API queues,
+        e.g. Nautilus, don't carry a UI workflow)."""
+        workflow = (extra_pnginfo or {}).get("workflow")
+        if workflow:
+            doc = dict(workflow)
+            if prompt:
+                doc.setdefault("extra", {})
+                doc["extra"] = dict(doc["extra"])
+                doc["extra"]["sse_api_prompt"] = prompt
+        elif prompt:
+            doc = prompt
+        else:
+            return
+        with open(prefix + ".workflow.json", "w", encoding="utf-8") as f:
+            json.dump(doc, f, indent=2)
 
     def _write_preview(self, frames, input_colorspace, fps, base_name, keep):
         import folder_paths

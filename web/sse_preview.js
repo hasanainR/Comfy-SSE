@@ -1,10 +1,15 @@
-// Comfy-SSE clip previews: a live, scrubbable player on SSE Load Clip (frames
-// served by routes.py, in the node's output colourspace) and on SSE Write
-// Clip (the H.264 preview written when the node executes).
+// Comfy-SSE clip previews + source picking:
+//  - SSE Load Clip: live scrubbable player while editing widgets
+//  - SSE Load Still: instant single-frame preview (frame_index aware)
+//  - SSE Write Clip: plays the H.264 preview written on execution
+//  - both load nodes: 📁 Browse dialog (server filesystem) and drag-and-drop
+//    of a media file onto the node (uploaded into ComfyUI's input folder)
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const CONTROLS_HEIGHT = 30;
+const MEDIA_RE = /\.(mp4|mov|mkv|avi|webm|mxf|m4v|exr|png|jpe?g|tiff?|dpx|webp|bmp)$/i;
+const BROWSE_DIR_KEY = "sse.browse.dir";
 
 const STYLE = `
 .sse-player { display: flex; flex-direction: column; gap: 4px; width: 100%; height: 100%; font: 11px sans-serif; color: #ddd; }
@@ -16,6 +21,17 @@ const STYLE = `
 .sse-controls button:disabled { opacity: 0.35; cursor: default; }
 .sse-controls input { flex: 1; min-width: 30px; margin: 0 4px; }
 .sse-frame { min-width: 64px; text-align: right; color: #999; font-variant-numeric: tabular-nums; }
+.sse-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 10000; display: flex; align-items: center; justify-content: center; }
+.sse-browser { width: 620px; max-width: 92vw; height: 70vh; display: flex; flex-direction: column; gap: 8px; background: #1d1d1d; border: 1px solid #444; border-radius: 8px; padding: 12px; font: 12px sans-serif; color: #ddd; box-shadow: 0 12px 40px rgba(0,0,0,0.6); }
+.sse-browser-head { display: flex; gap: 6px; }
+.sse-browser-head input, .sse-browser-head select { background: #111; color: #ddd; border: 1px solid #444; border-radius: 4px; padding: 4px 6px; }
+.sse-browser-head input { flex: 1; }
+.sse-browser-head button { background: #2a2a2a; color: #ddd; border: 1px solid #444; border-radius: 4px; padding: 4px 10px; cursor: pointer; }
+.sse-browser-head button:hover { border-color: #39f; }
+.sse-browser-list { flex: 1; overflow-y: auto; border: 1px solid #333; border-radius: 4px; }
+.sse-entry { padding: 4px 8px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sse-entry:hover { background: #333; }
+.sse-browser-msg { color: #f88; padding: 4px 8px; }
 `;
 
 function el(tag, className, parent) {
@@ -321,6 +337,139 @@ function addMaxHint(widget) {
     };
 }
 
+// ---------- source picking: browse dialog + drag-and-drop ----------
+
+function setSourcePath(node, path) {
+    const w = node.widgets.find((x) => x.name === "source_path");
+    if (!w) return;
+    w.value = path;
+    w.callback?.(path); // kicks the node's preview refresh
+    node.setDirtyCanvas(true, true);
+}
+
+function entryIcon(type) {
+    return { dir: "📁", seq: "🎞", video: "🎬", file: "🖼" }[type] ?? "·";
+}
+
+function browseDialog(onPick) {
+    const overlay = el("div", "sse-modal", document.body);
+    const panel = el("div", "sse-browser", overlay);
+    const head = el("div", "sse-browser-head", panel);
+    const drives = el("select", "", head);
+    drives.style.display = "none";
+    const pathInput = el("input", "", head);
+    pathInput.placeholder = "folder path…";
+    const goBtn = el("button", "", head);
+    goBtn.textContent = "Go";
+    const closeBtn = el("button", "", head);
+    closeBtn.textContent = "✕";
+    const list = el("div", "sse-browser-list", panel);
+
+    function close() {
+        overlay.remove();
+        document.removeEventListener("keydown", onKey);
+    }
+    function onKey(e) {
+        if (e.key === "Escape") close();
+    }
+    document.addEventListener("keydown", onKey);
+    overlay.addEventListener("mousedown", (e) => {
+        if (e.target === overlay) close();
+    });
+    closeBtn.addEventListener("click", close);
+
+    async function load(dir) {
+        list.textContent = "";
+        el("div", "sse-entry", list).textContent = "loading…";
+        let body = {};
+        let ok = false;
+        try {
+            const res = await api.fetchApi(`/sse/browse?${new URLSearchParams({ dir: dir ?? "" })}`);
+            body = await res.json();
+            ok = res.ok;
+        } catch {}
+        list.textContent = "";
+        if (!ok) {
+            el("div", "sse-browser-msg", list).textContent = body.error ?? "could not list folder";
+            return;
+        }
+        pathInput.value = body.dir;
+        localStorage.setItem(BROWSE_DIR_KEY, body.dir);
+        if (body.drives?.length) {
+            drives.style.display = "";
+            drives.textContent = "";
+            for (const d of body.drives) {
+                const o = el("option", "", drives);
+                o.value = d;
+                o.textContent = d;
+                if (body.dir.toLowerCase().startsWith(d.toLowerCase().slice(0, 2))) o.selected = true;
+            }
+        }
+        if (body.parent) {
+            const up = el("div", "sse-entry", list);
+            up.textContent = "📁 ..";
+            up.addEventListener("click", () => load(body.parent));
+        }
+        for (const entry of body.entries) {
+            const row = el("div", "sse-entry", list);
+            row.textContent = `${entryIcon(entry.type)} ${entry.name}`;
+            row.title = entry.path;
+            row.addEventListener("click", () => {
+                if (entry.type === "dir") {
+                    load(entry.path);
+                } else {
+                    close();
+                    onPick(entry.path);
+                }
+            });
+        }
+        if (!body.entries.length) el("div", "sse-entry", list).textContent = "(empty)";
+    }
+
+    drives.addEventListener("change", () => load(drives.value));
+    goBtn.addEventListener("click", () => load(pathInput.value));
+    pathInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") load(pathInput.value);
+    });
+    load(localStorage.getItem(BROWSE_DIR_KEY) || "");
+}
+
+function addBrowseButton(node) {
+    const btn = node.addWidget("button", "📁 browse…", null, () => {
+        browseDialog((path) => setSourcePath(node, path));
+    });
+    btn.serialize = false;
+    return btn;
+}
+
+async function uploadDropped(file) {
+    const body = new FormData();
+    body.append("file", file, file.name);
+    const res = await api.fetchApi("/sse/upload", { method: "POST", body });
+    let data = {};
+    try {
+        data = await res.json();
+    } catch {}
+    if (!res.ok || !data.path) throw new Error(data.error ?? "upload failed");
+    return data.path;
+}
+
+function addDropSupport(node) {
+    node.onDragOver = (e) => !!Array.from(e.dataTransfer?.types ?? []).includes("Files");
+    node.onDragDrop = async (e) => {
+        const file = e.dataTransfer?.files?.[0];
+        if (!file || !MEDIA_RE.test(file.name)) return false;
+        try {
+            setSourcePath(node, await uploadDropped(file));
+        } catch (err) {
+            alert(`Comfy-SSE: ${err.message}`);
+        }
+        return true;
+    };
+}
+
+// ---------- per-node setups ----------
+
 function setupLoadClip(node) {
     const { player, widget } = addPlayer(node);
     const w = (name) => node.widgets.find((x) => x.name === name);
@@ -412,6 +561,97 @@ function setupLoadClip(node) {
         timer = setTimeout(refresh, 300);
     });
     chain(node, "onConfigure", refresh);
+    addBrowseButton(node);
+    addDropSupport(node);
+    requestAnimationFrame(refresh);
+}
+
+function setupLoadStill(node) {
+    const { player, widget } = addPlayer(node);
+    const w = (name) => node.widgets.find((x) => x.name === name);
+    const get = (name) => w(name)?.value;
+    const frameW = w("frame_index");
+    addMaxHint(frameW);
+
+    let info = null;
+    let infoPath = null;
+    let infoToken = 0;
+    let timer = 0;
+
+    function setMax(max) {
+        frameW.options.max = max ?? 2 ** 31;
+        frameW.sseMax = max;
+        if (max != null && frameW.value > max) frameW.value = max;
+        node.setDirtyCanvas(true);
+    }
+
+    function apply() {
+        const show = get("show_preview") !== false;
+        if (!!widget.hidden === show) {
+            widget.hidden = !show;
+            fitHeight(node);
+        }
+        if (!info || !show) return;
+
+        const max = Math.max(0, info.frame_count - 1);
+        setMax(max);
+        const index = Math.max(0, Math.min(max, get("frame_index") ?? 0));
+        const path = infoPath;
+        const ics = get("input_colorspace");
+        const ocs = get("output_colorspace");
+        player.setFrames({
+            key: `still|${path}|${ics}|${ocs}`,
+            indices: [index],
+            fps: 24,
+            concurrency: 1,
+            fetchFrame: async (idx) => {
+                const q = new URLSearchParams({ path, index: idx, input_colorspace: ics, output_colorspace: ocs, expand: "0" });
+                const res = await api.fetchApi(`/sse/clip_frame?${q}`);
+                if (!res.ok) throw new Error(await res.text());
+                return res.blob();
+            },
+        });
+    }
+
+    async function loadInfo(path) {
+        const token = ++infoToken;
+        infoPath = path;
+        info = null;
+        setMax(null);
+        player.clear(path ? "reading source…" : "no source");
+        if (!path) return;
+        let res = null;
+        let body = {};
+        try {
+            res = await api.fetchApi(`/sse/clip_info?${new URLSearchParams({ path, expand: "0" })}`);
+            body = await res.json();
+        } catch {}
+        if (token !== infoToken) return;
+        if (!res?.ok) {
+            player.clear(body.error ?? "could not read source");
+            return;
+        }
+        info = body;
+        apply();
+    }
+
+    function refresh() {
+        const path = String(get("source_path") ?? "").trim();
+        if (path !== infoPath) loadInfo(path);
+        else apply();
+    }
+
+    for (const name of ["frame_index", "input_colorspace", "output_colorspace", "show_preview"]) {
+        const x = w(name);
+        if (x) chain(x, "callback", apply);
+    }
+    chain(w("source_path"), "callback", () => {
+        clearTimeout(timer);
+        timer = setTimeout(refresh, 300);
+    });
+    chain(node, "onConfigure", refresh);
+    addBrowseButton(node);
+    addDropSupport(node);
     requestAnimationFrame(refresh);
 }
 
@@ -437,6 +677,10 @@ app.registerExtension({
         if (nodeData.name === "SSE_LoadClip") {
             chain(nodeType.prototype, "onNodeCreated", function () {
                 setupLoadClip(this);
+            });
+        } else if (nodeData.name === "SSE_LoadStill") {
+            chain(nodeType.prototype, "onNodeCreated", function () {
+                setupLoadStill(this);
             });
         } else if (nodeData.name === "SSE_WriteClip") {
             chain(nodeType.prototype, "onNodeCreated", function () {
